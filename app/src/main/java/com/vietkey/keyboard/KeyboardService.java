@@ -30,10 +30,10 @@ import java.util.ArrayList;
 /**
  * Bàn phím tiếng Việt (Telex).
  *
- * Về hai lỗi trước đây:
- *  1) "uơ" thay vì "ươ": xử lý trong TelexEngine (uow / uwow luôn ra "ươ").
- *  2) Tự chuyển sang EN: bàn phím này KHÔNG tự đổi ngôn ngữ. Chế độ VI/EN chỉ đổi khi bấm phím VI/EN
- *     và được nhớ lại. Các ô mật khẩu, email, URL gõ thẳng không qua bộ gõ nhưng không làm đổi chế độ.
+ *  - "uow" / "uwow" luôn ra "ươ" (đủ cả hai dấu móc): xử lý trong TelexEngine.
+ *  - Không tự chuyển sang EN: chế độ VI/EN chỉ đổi khi bấm phím VI/EN và được nhớ lại.
+ *  - Từ tiếng Anh gõ giữa câu tự khôi phục khi nhấn cách (xem LangContext).
+ *  - Chế độ tương thích: không dùng gạch chân soạn thảo, dành cho app/trình duyệt xử lý composing kém.
  */
 public class KeyboardService extends InputMethodService {
 
@@ -53,6 +53,7 @@ public class KeyboardService extends InputMethodService {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final TelexEngine engine = new TelexEngine();
+    private final LangContext lang = new LangContext();
     private final ArrayList<TextView> letterViews = new ArrayList<>();
 
     private SharedPreferences prefs;
@@ -61,14 +62,16 @@ public class KeyboardService extends InputMethodService {
     private TextView shiftView;
 
     private boolean viMode = true;
-    private boolean directMode = false; // mật khẩu, email, URL, số: gõ thẳng
+    private boolean directMode = false; // mật khẩu, email, số: gõ thẳng
+    private boolean compat = false;     // chế độ tương thích
     private boolean symbols = false;
     private int shift = 0;              // 0 tắt, 1 một lần, 2 khóa
     private long lastShiftTap = 0;
     private long lastEdit = 0;
+    private int compLen = 0;            // chế độ tương thích: độ dài từ đang chèn
+    private int cursorAfterEdit = -1;   // chế độ tương thích: vị trí con trỏ sau lần gõ cuối
     private String builtSig = "";
 
-    // màu và kích thước đọc từ cài đặt
     private int cBg, cKey, cSpecial, cPress, cText;
     private int keyAlpha;
     private int rowHeightDp;
@@ -121,8 +124,12 @@ public class KeyboardService extends InputMethodService {
     public void onStartInputView(EditorInfo info, boolean restarting) {
         super.onStartInputView(info, restarting);
         engine.clear();
+        lang.clear();
+        compLen = 0;
+        cursorAfterEdit = -1;
         engine.setModernTone(prefs.getBoolean(Cfg.K_MODERN, false));
         viMode = prefs.getBoolean(Cfg.K_VI, true);
+        compat = prefs.getBoolean(Cfg.K_COMPAT, false);
 
         int cls = info.inputType & InputType.TYPE_MASK_CLASS;
         int var = info.inputType & InputType.TYPE_MASK_VARIATION;
@@ -132,16 +139,17 @@ public class KeyboardService extends InputMethodService {
                 || var == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
                 || var == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
                 || var == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS
-                || var == InputType.TYPE_TEXT_VARIATION_URI;
+                // Thanh địa chỉ trình duyệt (Chrome, Cốc Cốc) là ô URL: mặc định vẫn gõ tiếng Việt
+                || (var == InputType.TYPE_TEXT_VARIATION_URI && !prefs.getBoolean(Cfg.K_URI_VI, true));
         symbols = cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE
                 || cls == InputType.TYPE_CLASS_DATETIME;
 
+        shift = 0;
         if (!signature().equals(builtSig)) {
             setInputView(onCreateInputView());
         } else {
             buildKeys();
         }
-        shift = 0;
         autoCaps();
     }
 
@@ -149,6 +157,7 @@ public class KeyboardService extends InputMethodService {
     public void onFinishInput() {
         super.onFinishInput();
         engine.clear();
+        compLen = 0;
     }
 
     @Override
@@ -166,12 +175,22 @@ public class KeyboardService extends InputMethodService {
     public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
                                   int candStart, int candEnd) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candStart, candEnd);
-        // Người dùng chạm sang chỗ khác: bỏ từ đang soạn. Bỏ qua thông báo đến trễ ngay sau khi tự gõ.
-        if (!engine.isEmpty() && SystemClock.uptimeMillis() - lastEdit > 400
-                && (newSelStart != candEnd || newSelEnd != candEnd)) {
+        // Thông báo đến ngay sau khi tự gõ: chỉ ghi nhận vị trí con trỏ, không coi là người dùng chạm sang chỗ khác.
+        if (SystemClock.uptimeMillis() - lastEdit < 400) {
+            cursorAfterEdit = newSelStart;
+            return;
+        }
+        if (engine.isEmpty()) return;
+        // Chỉ so điểm đầu vùng chọn: trình duyệt có thể bôi đen phần tự hoàn thành phía sau con trỏ.
+        boolean moved = compat
+                ? newSelStart != cursorAfterEdit
+                : (candEnd == -1 || newSelStart != candEnd);
+        if (moved) {
             engine.clear();
+            lang.clear();
+            compLen = 0;
             InputConnection ic = getCurrentInputConnection();
-            if (ic != null) ic.finishComposingText();
+            if (!compat && ic != null) ic.finishComposingText();
         }
     }
 
@@ -180,21 +199,19 @@ public class KeyboardService extends InputMethodService {
     private String signature() {
         StringBuilder sb = new StringBuilder();
         sb.append(getResources().getConfiguration().orientation);
-        for (String k : new String[]{Cfg.K_THEME, Cfg.K_ALPHA, Cfg.K_DIM, Cfg.K_HEIGHT, Cfg.K_SPLIT,
-                Cfg.K_GAP, Cfg.K_IMG}) {
+        for (String k : new String[]{Cfg.K_ALPHA, Cfg.K_DIM, Cfg.K_HEIGHT, Cfg.K_SPLIT, Cfg.K_GAP, Cfg.K_IMG,
+                Cfg.K_C_BG, Cfg.K_C_KEY, Cfg.K_C_SPECIAL, Cfg.K_C_TEXT}) {
             sb.append('|').append(String.valueOf(prefs.getAll().get(k)));
         }
         return sb.toString();
     }
 
     private void loadStyle() {
-        int t = Math.max(0, Math.min(Cfg.THEMES.length - 1, prefs.getInt(Cfg.K_THEME, 0)));
-        int[] th = Cfg.THEMES[t];
-        cBg = th[0];
-        cKey = th[1];
-        cSpecial = th[2];
-        cPress = th[3];
-        cText = th[4];
+        cBg = Cfg.color(prefs, 0);
+        cKey = Cfg.color(prefs, 1);
+        cSpecial = Cfg.color(prefs, 2);
+        cText = Cfg.color(prefs, 3);
+        cPress = Cfg.pressColor(cKey);
         keyAlpha = Math.max(20, Math.min(100, prefs.getInt(Cfg.K_ALPHA, 90)));
         boolean landscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
         float h = Math.max(36, Math.min(70, prefs.getInt(Cfg.K_HEIGHT, 50)));
@@ -344,7 +361,7 @@ public class KeyboardService extends InputMethodService {
                 int idx = "qwertyuiop".indexOf(id);
                 if (idx >= 0) {
                     longFired = true;
-                    handleChar(String.valueOf(DIGITS.charAt(idx)), false);
+                    handleChar(String.valueOf(DIGITS.charAt(idx)));
                 }
             }
         };
@@ -422,6 +439,7 @@ public class KeyboardService extends InputMethodService {
                 break;
             case "LANG":
                 finishComposing();
+                lang.clear();
                 viMode = !viMode;
                 prefs.edit().putBoolean(Cfg.K_VI, viMode).apply();
                 buildKeys();
@@ -430,11 +448,11 @@ public class KeyboardService extends InputMethodService {
                 handleDelete();
                 break;
             default:
-                handleChar(id, true);
+                handleChar(id);
         }
     }
 
-    private void handleChar(String s, boolean fromKey) {
+    private void handleChar(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         char c = s.charAt(0);
@@ -450,10 +468,23 @@ public class KeyboardService extends InputMethodService {
             refreshLetters();
         }
         if (viMode && !directMode) {
-            lastEdit = SystemClock.uptimeMillis();
-            ic.setComposingText(engine.type(c), 1);
+            showComposition(ic, engine.type(c));
         } else {
             commit(String.valueOf(c));
+        }
+    }
+
+    /** Hiển thị từ đang soạn: gạch chân (composing) hoặc xóa-và-chèn lại ở chế độ tương thích. */
+    private void showComposition(InputConnection ic, String text) {
+        lastEdit = SystemClock.uptimeMillis();
+        if (compat) {
+            ic.beginBatchEdit();
+            if (compLen > 0) ic.deleteSurroundingText(compLen, 0);
+            ic.commitText(text, 1);
+            ic.endBatchEdit();
+            compLen = text.length();
+        } else {
+            ic.setComposingText(text, 1);
         }
     }
 
@@ -463,8 +494,16 @@ public class KeyboardService extends InputMethodService {
         lastEdit = SystemClock.uptimeMillis();
         if (!engine.isEmpty()) {
             String t = engine.backspace();
-            if (t.isEmpty()) ic.commitText("", 1);
-            else ic.setComposingText(t, 1);
+            if (t.isEmpty()) {
+                if (compat) {
+                    if (compLen > 0) ic.deleteSurroundingText(compLen, 0);
+                    compLen = 0;
+                } else {
+                    ic.commitText("", 1);
+                }
+            } else {
+                showComposition(ic, t);
+            }
         } else {
             sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL);
         }
@@ -472,6 +511,7 @@ public class KeyboardService extends InputMethodService {
 
     private void doEnter() {
         finishComposing();
+        lang.clear();
         InputConnection ic = getCurrentInputConnection();
         EditorInfo ei = getCurrentInputEditorInfo();
         if (ic == null) return;
@@ -493,12 +533,28 @@ public class KeyboardService extends InputMethodService {
         ic.commitText(s, 1);
     }
 
+    /** Chốt từ đang soạn. LangContext quyết định giữ tiếng Việt hay trả về phím tiếng Anh. */
     private void finishComposing() {
         if (engine.isEmpty()) return;
         InputConnection ic = getCurrentInputConnection();
         lastEdit = SystemClock.uptimeMillis();
-        if (ic != null) ic.finishComposingText();
+        String shown = engine.text();
+        String out = lang.decide(engine, prefs.getBoolean(Cfg.K_RESTORE, true));
+        if (ic != null) {
+            if (compat) {
+                if (!out.equals(shown)) {
+                    ic.beginBatchEdit();
+                    if (compLen > 0) ic.deleteSurroundingText(compLen, 0);
+                    ic.commitText(out, 1);
+                    ic.endBatchEdit();
+                }
+            } else {
+                if (!out.equals(shown)) ic.setComposingText(out, 1);
+                ic.finishComposingText();
+            }
+        }
         engine.clear();
+        compLen = 0;
     }
 
     /** Tự viết hoa đầu câu nếu ô nhập yêu cầu. */

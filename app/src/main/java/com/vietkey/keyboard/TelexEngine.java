@@ -52,10 +52,39 @@ public final class TelexEngine {
         return text;
     }
 
-    private String compose() {
+    private Word build() {
         Word w = new Word(modernTone);
         for (int i = 0; i < raw.length(); i++) w.feed(raw.charAt(i));
-        return w.render();
+        return w;
+    }
+
+    private String compose() {
+        return build().render();
+    }
+
+    /** Từ đang soạn có dạng một âm tiết tiếng Việt hợp lệ không (kể cả khi chưa biến đổi gì). */
+    public boolean looksVietnamese() {
+        return build().valid();
+    }
+
+    /** Các phím thô đã bấm cho từ đang soạn (dùng để khôi phục từ tiếng Anh). */
+    public String raw() { return raw.toString(); }
+
+    /**
+     * Từ đang soạn có phải âm tiết tiếng Việt hợp lệ không?
+     * Từ không bị biến đổi gì (text == raw) luôn coi là hợp lệ vì không cần khôi phục.
+     */
+    public boolean isValidWord() {
+        if (text.equals(raw.toString())) return true;
+        return build().valid();
+    }
+
+    /** Dành cho kiểm thử: gõ rồi "nhấn cách", có tự khôi phục từ tiếng Anh. */
+    public static String convertAndCommit(String keys, boolean modernTone) {
+        TelexEngine e = new TelexEngine();
+        e.modernTone = modernTone;
+        for (int i = 0; i < keys.length(); i++) e.type(keys.charAt(i));
+        return e.isValidWord() ? e.text() : e.raw();
     }
 
     /** Tiện ích cho kiểm thử: gõ cả chuỗi phím thô và lấy kết quả. */
@@ -67,6 +96,19 @@ public final class TelexEngine {
     }
 
     // ------------------------------------------------------------------------------------
+
+    private static final java.util.Set<String> ONSETS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "", "b", "c", "ch", "d", "đ", "g", "gh", "gi", "h", "k", "kh", "l", "m", "n", "ng", "ngh",
+            "nh", "ph", "qu", "r", "s", "t", "th", "tr", "v", "x"));
+    private static final java.util.Set<String> CODAS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "", "c", "ch", "m", "n", "ng", "nh", "p", "t"));
+    private static final java.util.Set<String> NUCLEI = new java.util.HashSet<>(java.util.Arrays.asList(
+            "a", "ă", "â", "e", "ê", "i", "o", "ô", "ơ", "u", "ư", "y",
+            "ai", "ao", "au", "ay", "âu", "ây", "eo", "êu", "ia", "iê", "iu",
+            "oa", "oă", "oe", "oi", "ôi", "ơi", "ua", "uâ", "uê", "ui",
+            "uô", "uơ", "uy", "ưa", "ưi", "ươ", "ưu", "yê", "oo",
+            "iêu", "oai", "oay", "oeo", "uây", "uôi", "ươi", "ươu",
+            "uyê", "uyu", "uya", "yêu"));
 
     private static final int NONE = 0, CIRC = 1, BREVE = 2, HORN = 3, STROKE = 4;
     private static final String[] TONE_MARKS = {"", "́", "̀", "̉", "̃", "̣"};
@@ -329,6 +371,41 @@ public final class TelexEngine {
                 return s;                                                 // hòa, khỏe, thúy, mái, múa
             }
             return s + 1;                                                 // ngoài, tuổi...
+        }
+
+        // ---------------- kiểm tra âm tiết tiếng Việt ----------------
+
+        private String piece(VChar v) {
+            char b = v.base;
+            if (b == 'd') return v.mod == STROKE ? "đ" : "d";
+            if (b == 'a') return v.mod == CIRC ? "â" : v.mod == BREVE ? "ă" : "a";
+            if (b == 'e') return v.mod == CIRC ? "ê" : "e";
+            if (b == 'o') return v.mod == CIRC ? "ô" : v.mod == HORN ? "ơ" : "o";
+            if (b == 'u') return v.mod == HORN ? "ư" : "u";
+            return String.valueOf(b);
+        }
+
+        boolean valid() {
+            int n = ch.size();
+            int i = 0;
+            StringBuilder onset = new StringBuilder();
+            while (i < n && !isVowelAt(i)) onset.append(piece(ch.get(i++)));
+            StringBuilder nuc = new StringBuilder();
+            while (i < n && isVowelAt(i)) nuc.append(piece(ch.get(i++)));
+            if (nuc.length() == 0) return true;                // chưa có nguyên âm: không đụng vào
+            StringBuilder coda = new StringBuilder();
+            while (i < n) {
+                if (isVowelAt(i)) return false;                // nguyên âm sau phụ âm cuối (ana, farther...)
+                coda.append(piece(ch.get(i++)));
+            }
+            if (!ONSETS.contains(onset.toString())) return false;
+            if (!NUCLEI.contains(nuc.toString())) return false;
+            String c = coda.toString();
+            if (!CODAS.contains(c)) return false;
+            // vần kết thúc bằng c, ch, p, t chỉ có dấu sắc hoặc nặng
+            if ((c.equals("c") || c.equals("ch") || c.equals("p") || c.equals("t"))
+                    && (tone == 2 || tone == 3 || tone == 4)) return false;
+            return true;
         }
 
         String render() {
