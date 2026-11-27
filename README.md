@@ -3,8 +3,9 @@
 ## Tính năng
 - Gõ Telex: `uow` / `uwow` ra **ươ** đủ cả hai dấu móc, `dduwocj` ra **được**.
 - Không tự chuyển sang EN. Chỉ đổi khi bấm phím **VI/EN** và được nhớ lại.
-- Từ tiếng Anh tự khôi phục khi nhấn cách: `farther` hiện "fảthẻ" lúc gõ rồi về "farther".
-  Từ nhập nhằng (six = sĩ) quyết định theo các từ gõ ngay trước: "ca sĩ" nhưng "for five six".
+- Gõ lẫn Anh - Việt: từ không phải tiếng Việt tự khôi phục khi nhấn cách (`farther` hiện "fảthẻ" lúc gõ rồi về "farther").
+  Từ nhập nhằng (six = sĩ) theo các từ gõ ngay trước: "ca sĩ" nhưng "for five six". Chưa có ngữ cảnh thì ưu tiên tiếng Việt.
+  Muốn ra tiếng Anh thì gõ đôi phím dấu: `iss` = is, `ass` = as, `offf` = off.
 - Bảng màu: chỉnh riêng màu nền, màu phím, màu phím chức năng, màu chữ; 9 bộ màu có sẵn; có xem trước.
 - Ảnh nền tùy chọn, chỉnh độ đậm phím, độ tối ảnh, chiều cao phím.
 - Xoay ngang tự **tách đôi** bàn phím, chỉnh độ rộng khoảng trống ở giữa.

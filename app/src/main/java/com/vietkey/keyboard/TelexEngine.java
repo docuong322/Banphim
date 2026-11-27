@@ -62,6 +62,11 @@ public final class TelexEngine {
         return build().render();
     }
 
+    /** Người dùng vừa chủ động gõ đôi để hủy dấu (iss -> is): kết quả đã hủy là ý muốn, không khôi phục. */
+    public boolean userUndid() {
+        return build().undone();
+    }
+
     /** Từ đang soạn có dạng một âm tiết tiếng Việt hợp lệ không (kể cả khi chưa biến đổi gì). */
     public boolean looksVietnamese() {
         return build().valid();
@@ -383,6 +388,13 @@ public final class TelexEngine {
             if (b == 'o') return v.mod == CIRC ? "ô" : v.mod == HORN ? "ơ" : "o";
             if (b == 'u') return v.mod == HORN ? "ư" : "u";
             return String.valueOf(b);
+        }
+
+        /** Người dùng đã chủ động hủy dấu bằng cách gõ đôi (iss -> is, aaa -> aa, ddd -> dd). */
+        boolean undone() {
+            if (toneBlocked) return true;
+            for (VChar v : ch) if (v.locked) return true;
+            return false;
         }
 
         boolean valid() {

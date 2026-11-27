@@ -4,6 +4,7 @@ import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.PorterDuff;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.inputmethodservice.InputMethodService;
@@ -59,7 +60,7 @@ public class KeyboardService extends InputMethodService {
     private SharedPreferences prefs;
     private FrameLayout root;
     private LinearLayout keysBox;
-    private TextView shiftView;
+    private ImageView shiftView;
 
     private boolean viMode = true;
     private boolean directMode = false; // mật khẩu, email, số: gõ thẳng
@@ -247,12 +248,16 @@ public class KeyboardService extends InputMethodService {
             String id = ids[i];
             if (id.equals("SPACE")) {
                 if (splitNow) {
-                    row.addView(makeKey(id, "", 2f));
+                    row.addView(makeKey(id, "", 3f));
                     row.addView(spacer(gapWeight));
-                    row.addView(makeKey(id, "", 2f));
+                    row.addView(makeKey(id, "", 3f));
                 } else {
-                    row.addView(makeKey(id, viMode ? "Tiếng Việt" : "English", 4f));
+                    row.addView(makeKey(id, viMode ? "Tiếng Việt" : "English", 6f));
                 }
+                continue;
+            }
+            if (id.equals("SHIFT") || id.equals("ENTER")) {
+                row.addView(makeIconKey(id, weightFor(id)));
                 continue;
             }
             row.addView(makeKey(id, labelFor(id), weightFor(id)));
@@ -312,8 +317,33 @@ public class KeyboardService extends InputMethodService {
         tv.setTag(id);
         tv.setOnTouchListener(new KeyTouch(id));
         if (id.length() == 1 && Character.isLetter(id.charAt(0))) letterViews.add(tv);
-        if (id.equals("SHIFT")) shiftView = tv;
         return tv;
+    }
+
+    /** Phím Shift và Enter: vẽ mũi tên bằng hình vector, to và cân đối ở mọi cỡ phím. */
+    private ImageView makeIconKey(String id, float weight) {
+        ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setPadding(dp(7), dp(7), dp(7), dp(7));
+        iv.setColorFilter(cText, PorterDuff.Mode.SRC_IN);
+        iv.setBackground(keyBackground(true));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, weight);
+        lp.setMargins(dp(2.5f), dp(3), dp(2.5f), dp(3));
+        iv.setLayoutParams(lp);
+        iv.setTag(id);
+        iv.setOnTouchListener(new KeyTouch(id));
+        if (id.equals("ENTER")) {
+            iv.setImageResource(R.drawable.ic_enter);
+        } else {
+            shiftView = iv;
+            iv.setImageResource(shiftIcon());
+        }
+        return iv;
+    }
+
+    private int shiftIcon() {
+        return shift == 2 ? R.drawable.ic_caps : shift == 1 ? R.drawable.ic_shift_on : R.drawable.ic_shift;
     }
 
     private StateListDrawable keyBackground(boolean special) {
@@ -346,8 +376,7 @@ public class KeyboardService extends InputMethodService {
             tv.setText(up ? id.toUpperCase() : id);
         }
         if (shiftView != null) {
-            shiftView.setText(shift == 2 ? "⇪" : "⇧");
-            shiftView.setAlpha(shift == 0 ? 0.85f : 1f);
+            shiftView.setImageResource(shiftIcon());
         }
     }
 

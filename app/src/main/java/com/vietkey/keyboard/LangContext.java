@@ -43,6 +43,11 @@ final class LangContext {
     String decide(TelexEngine e, boolean restoreEnabled) {
         String shown = e.text();
         if (!restoreEnabled) return shown;
+        // Gõ đôi để hủy dấu (iss -> is, ass -> as): người dùng chủ động muốn tiếng Anh, giữ nguyên kết quả.
+        if (e.userUndid()) {
+            push(false);
+            return shown;
+        }
         String raw = e.raw();
         boolean modified = !shown.equals(raw);
         boolean valid = e.looksVietnamese();
@@ -52,7 +57,10 @@ final class LangContext {
                 push(false);
                 return raw;
             }
-            if (!strongVietnamese(shown) && englishContext()) {   // six, too, see... giữa câu tiếng Anh
+            // Chỉ từ thật sự là tiếng Anh (six, too, see, box...) mới bị trả về giữa câu tiếng Anh.
+            // Từ không có trong từ điển (lại, nhé, được...) luôn giữ tiếng Việt.
+            if (!strongVietnamese(shown) && englishContext()
+                    && EnglishCollisions.contains(raw.toLowerCase())) {
                 push(false);
                 return raw;
             }
