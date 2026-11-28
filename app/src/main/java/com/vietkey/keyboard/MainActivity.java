@@ -113,7 +113,9 @@ public class MainActivity extends Activity {
         seek("Độ tối của ảnh nền (giúp chữ dễ đọc)", Cfg.K_DIM, 0, 80, 25, "%");
         seek("Chiều cao phím", Cfg.K_HEIGHT, 36, 70, 50, " dp");
 
-        section("5. Xoay ngang");
+        section("5. Bố cục và xoay ngang");
+        sw("Hiện hàng số phía trên bàn phím", Cfg.K_NUMROW, true);
+        sw("Hiện bong bóng phóng to phím khi gõ", Cfg.K_PREVIEW, true);
         sw("Tách đôi bàn phím khi xoay ngang", Cfg.K_SPLIT, true);
         seek("Độ rộng khoảng trống ở giữa", Cfg.K_GAP, 10, 50, 25, "%");
 
@@ -123,10 +125,12 @@ public class MainActivity extends Activity {
                 Cfg.K_RESTORE, true);
         sw("Gõ tiếng Việt trong thanh địa chỉ trình duyệt (tắt nếu hay gõ link)", Cfg.K_URI_VI, true);
         sw("Rung khi gõ phím", Cfg.K_HAPTIC, true);
-        sw("Chế độ tương thích (bật nếu một số app hoặc trình duyệt gõ bị lỗi, mất chữ)",
-                Cfg.K_COMPAT, false);
+        sw("Gõ trực tiếp, ổn định ở mọi ô nhập (khuyên dùng). Tắt để hiện gạch chân khi soạn, nhưng có thể lỗi ở ô tìm kiếm, trình duyệt",
+                Cfg.K_COMPAT, true);
 
-        text("Mẹo: giữ phím hàng trên cùng (q w e r t y u i o p) để gõ số 1 2 3 ... 0.");
+        text("Mẹo: giữ một phím chữ để chọn chữ hoa hoặc số/ký tự (t: T, 5   a: A, @), trượt ngón tay rồi nhả để chọn. "
+                + "Giữ phím cách rồi vuốt ngang hoặc dọc để di chuyển con trỏ. "
+                + "Quay lại sửa một từ cũ rồi gõ tiếp, bộ gõ vẫn ghép được dấu tiếng Việt.");
         refreshColors();
     }
 

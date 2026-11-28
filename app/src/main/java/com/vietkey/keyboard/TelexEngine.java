@@ -72,6 +72,71 @@ public final class TelexEngine {
         return build().valid();
     }
 
+    /**
+     * Dựng lại bộ gõ từ một từ đã có sẵn trong ô nhập (khi người dùng quay lại sửa), để gõ tiếp vẫn ghép được dấu.
+     * Ví dụ "học" -> các phím "hocj". Trả về false nếu từ có ký tự lạ hoặc không dựng lại đúng được.
+     */
+    public boolean seed(String word) {
+        if (word == null || word.isEmpty() || word.length() > 12) return false;
+        String keys = toKeys(word);
+        if (keys == null) return false;
+        TelexEngine t = new TelexEngine();
+        t.modernTone = modernTone;
+        for (int i = 0; i < keys.length(); i++) t.type(keys.charAt(i));
+        // So sánh bỏ dấu thanh: kiểu đặt dấu (hòa/hoà) có thể khác với cài đặt hiện tại
+        if (!stripTone(t.text()).equals(stripTone(word))) return false;
+        clear();
+        raw.append(keys);
+        text = compose();
+        return true;
+    }
+
+    private static final String TONE_KEYS = "sfrxj";
+    private static final char[] TONE_MARK_CHARS = {'\u0301', '\u0300', '\u0309', '\u0303', '\u0323'};
+
+    private static String stripTone(String s) {
+        String d = Normalizer.normalize(s, Normalizer.Form.NFD);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < d.length(); i++) {
+            char c = d.charAt(i);
+            boolean tone = false;
+            for (char m : TONE_MARK_CHARS) if (c == m) tone = true;
+            if (!tone) sb.append(c);
+        }
+        return Normalizer.normalize(sb, Normalizer.Form.NFC);
+    }
+
+    /** Chuyển từ tiếng Việt về chuỗi phím Telex: "tiếng" -> "tieengs". Null nếu có ký tự không gõ được. */
+    private static String toKeys(String word) {
+        StringBuilder keys = new StringBuilder();
+        char toneKey = 0;
+        for (int i = 0; i < word.length(); i++) {
+            char c = word.charAt(i);
+            boolean upper = Character.isUpperCase(c);
+            if (c == '\u0111' || c == '\u0110') {              // đ, Đ
+                keys.append(upper ? 'D' : 'd').append('d');
+                continue;
+            }
+            String d = Normalizer.normalize(String.valueOf(c), Normalizer.Form.NFD);
+            char base = Character.toLowerCase(d.charAt(0));
+            if (base < 'a' || base > 'z') return null;
+            keys.append(upper ? Character.toUpperCase(base) : base);
+            for (int k = 1; k < d.length(); k++) {
+                char m = d.charAt(k);
+                if (m == '\u0302') keys.append(base);            // â ê ô: gõ đôi nguyên âm
+                else if (m == '\u0306' || m == '\u031B') keys.append('w'); // ă ơ ư
+                else {
+                    int t = -1;
+                    for (int q = 0; q < TONE_MARK_CHARS.length; q++) if (m == TONE_MARK_CHARS[q]) t = q;
+                    if (t < 0) return null;
+                    toneKey = TONE_KEYS.charAt(t);
+                }
+            }
+        }
+        if (toneKey != 0) keys.append(toneKey);
+        return keys.toString();
+    }
+
     /** Các phím thô đã bấm cho từ đang soạn (dùng để khôi phục từ tiếng Anh). */
     public String raw() { return raw.toString(); }
 

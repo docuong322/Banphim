@@ -19,7 +19,9 @@ final class Cfg {
     static final String K_HAPTIC = "haptic";   // boolean: rung khi gõ
     static final String K_URI_VI = "uri_vi";   // boolean: gõ tiếng Việt trong ô URL / thanh địa chỉ
     static final String K_RESTORE = "restore"; // boolean: tự nhận diện và khôi phục từ tiếng Anh
-    static final String K_COMPAT = "compat";   // boolean: chế độ tương thích (không dùng gạch chân soạn thảo)
+    static final String K_COMPAT = "compat";   // boolean: gõ trực tiếp (xóa và chèn lại), mặc định bật
+    static final String K_NUMROW = "numrow";   // boolean: hiện hàng số phía trên
+    static final String K_PREVIEW = "preview"; // boolean: bong bóng phóng to phím khi gõ
     static final String K_IMG = "img";         // long: dấu thời gian ảnh nền (0 = không có)
     static final String K_VI = "vi";           // boolean: đang ở chế độ tiếng Việt
 

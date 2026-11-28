@@ -24,9 +24,11 @@ import android.view.inputmethod.InputConnection;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * Bàn phím tiếng Việt (Telex).
@@ -34,23 +36,35 @@ import java.util.ArrayList;
  *  - "uow" / "uwow" luôn ra "ươ" (đủ cả hai dấu móc): xử lý trong TelexEngine.
  *  - Không tự chuyển sang EN: chế độ VI/EN chỉ đổi khi bấm phím VI/EN và được nhớ lại.
  *  - Từ tiếng Anh gõ giữa câu tự khôi phục khi nhấn cách (xem LangContext).
- *  - Chế độ tương thích: không dùng gạch chân soạn thảo, dành cho app/trình duyệt xử lý composing kém.
+ *  - Gõ trực tiếp (xóa và chèn lại) để chạy được ở mọi ô nhập, kể cả ô tìm kiếm và trình duyệt.
+ *  - Quay lại sửa từ cũ: dựng lại từ trước con trỏ rồi gõ tiếp vẫn ghép được dấu.
+ *  - Hàng số, bong bóng phóng to phím, giữ phím để chọn chữ hoa hoặc số/ký tự, vuốt phím cách để di chuyển con trỏ.
  */
 public class KeyboardService extends InputMethodService {
 
-    private static final String[][] LETTERS = {
+    private static final String[] NUM_ROW = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
+    private static final String[][] LETTER_ROWS = {
             {"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
             {"a", "s", "d", "f", "g", "h", "j", "k", "l"},
-            {"SHIFT", "z", "x", "c", "v", "b", "n", "m", "DEL"},
-            {"SYM", ",", "LANG", "SPACE", ".", "ENTER"}
+            {"SHIFT", "z", "x", "c", "v", "b", "n", "m", "DEL"}
     };
-    private static final String[][] SYMBOLS = {
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
-            {"@", "#", "$", "%", "&", "-", "+", "(", ")", "/"},
-            {"=", "~", "*", "\"", "'", ":", ";", "!", "?", "DEL"},
-            {"SYM", ",", "LANG", "SPACE", ".", "ENTER"}
-    };
-    private static final String DIGITS = "1234567890";
+    private static final String[] BOTTOM = {"SYM", ",", "LANG", "SPACE", ".", "ENTER"};
+    private static final String[] SYM1 = {"@", "#", "$", "%", "&", "-", "+", "(", ")", "/"};
+    private static final String[] SYM2_OLD = {"=", "~", "*", "\"", "'", ":", ";", "!", "?", "DEL"};
+    private static final String[] SYM2_NEW = {"*", "\"", "'", ":", ";", "!", "?", "_", "=", "~"};
+    private static final String[] SYM3_NEW = {"[", "]", "{", "}", "<", ">", "\\", "|", "^", "DEL"};
+
+    /** Giữ phím chữ thì ngoài chữ hoa còn có số hoặc ký tự này (t: T, 5   a: A, @). */
+    private static final HashMap<String, String> ALT = new HashMap<>();
+
+    static {
+        String top = "qwertyuiop", digits = "1234567890";
+        for (int i = 0; i < top.length(); i++) ALT.put(String.valueOf(top.charAt(i)), String.valueOf(digits.charAt(i)));
+        String r2 = "asdfghjkl", s2 = "@#$%&-+()";
+        for (int i = 0; i < r2.length(); i++) ALT.put(String.valueOf(r2.charAt(i)), String.valueOf(s2.charAt(i)));
+        String r3 = "zxcvbnm", s3 = "*\"':;!?";
+        for (int i = 0; i < r3.length(); i++) ALT.put(String.valueOf(r3.charAt(i)), String.valueOf(s3.charAt(i)));
+    }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final TelexEngine engine = new TelexEngine();
@@ -62,15 +76,25 @@ public class KeyboardService extends InputMethodService {
     private LinearLayout keysBox;
     private ImageView shiftView;
 
+    private PopupWindow preview;        // bong bóng phóng to phím đang nhấn
+    private TextView previewTv;
+    private View previewOwner;
+    private PopupWindow altPopup;       // bảng chọn khi giữ phím
+    private TextView[] altViews = new TextView[0];
+    private int altSel = 0;
+    private int altLeft = 0;
+    private int altItemW = 0;
+    private String[] altOpts = new String[0];
+
     private boolean viMode = true;
     private boolean directMode = false; // mật khẩu, email, số: gõ thẳng
-    private boolean compat = false;     // chế độ tương thích
+    private boolean compat = true;      // gõ trực tiếp (xóa và chèn lại)
     private boolean symbols = false;
     private int shift = 0;              // 0 tắt, 1 một lần, 2 khóa
     private long lastShiftTap = 0;
     private long lastEdit = 0;
-    private int compLen = 0;            // chế độ tương thích: độ dài từ đang chèn
-    private int cursorAfterEdit = -1;   // chế độ tương thích: vị trí con trỏ sau lần gõ cuối
+    private int compLen = 0;            // độ dài từ đang chèn (gõ trực tiếp)
+    private boolean nullInput = false;  // ô nhập kiểu TYPE_NULL: chỉ nhận phím, không nhận văn bản
     private String builtSig = "";
 
     private int cBg, cKey, cSpecial, cPress, cText;
@@ -86,6 +110,13 @@ public class KeyboardService extends InputMethodService {
         super.onCreate();
         prefs = Cfg.prefs(this);
         viMode = prefs.getBoolean(Cfg.K_VI, true);
+    }
+
+    @Override
+    public void onDestroy() {
+        hidePreview(null);
+        hideAlt();
+        super.onDestroy();
     }
 
     @Override
@@ -127,10 +158,12 @@ public class KeyboardService extends InputMethodService {
         engine.clear();
         lang.clear();
         compLen = 0;
-        cursorAfterEdit = -1;
+        hidePreview(null);
+        hideAlt();
         engine.setModernTone(prefs.getBoolean(Cfg.K_MODERN, false));
         viMode = prefs.getBoolean(Cfg.K_VI, true);
-        compat = prefs.getBoolean(Cfg.K_COMPAT, false);
+        compat = prefs.getBoolean(Cfg.K_COMPAT, true);
+        nullInput = info.inputType == InputType.TYPE_NULL;
 
         int cls = info.inputType & InputType.TYPE_MASK_CLASS;
         int var = info.inputType & InputType.TYPE_MASK_VARIATION;
@@ -162,8 +195,18 @@ public class KeyboardService extends InputMethodService {
     }
 
     @Override
+    public void onFinishInputView(boolean finishingInput) {
+        hidePreview(null);
+        hideAlt();
+        finishComposing(); // đóng bàn phím giữa chừng: chốt từ đang gõ
+        super.onFinishInputView(finishingInput);
+    }
+
+    @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        hidePreview(null);
+        hideAlt();
         setInputView(onCreateInputView());
     }
 
@@ -176,23 +219,28 @@ public class KeyboardService extends InputMethodService {
     public void onUpdateSelection(int oldSelStart, int oldSelEnd, int newSelStart, int newSelEnd,
                                   int candStart, int candEnd) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candStart, candEnd);
-        // Thông báo đến ngay sau khi tự gõ: chỉ ghi nhận vị trí con trỏ, không coi là người dùng chạm sang chỗ khác.
-        if (SystemClock.uptimeMillis() - lastEdit < 400) {
-            cursorAfterEdit = newSelStart;
-            return;
-        }
-        if (engine.isEmpty()) return;
-        // Chỉ so điểm đầu vùng chọn: trình duyệt có thể bôi đen phần tự hoàn thành phía sau con trỏ.
-        boolean moved = compat
-                ? newSelStart != cursorAfterEdit
-                : (candEnd == -1 || newSelStart != candEnd);
-        if (moved) {
-            engine.clear();
-            lang.clear();
-            compLen = 0;
-            InputConnection ic = getCurrentInputConnection();
-            if (!compat && ic != null) ic.finishComposingText();
-        }
+        // Thông báo đến ngay sau khi tự gõ thì bỏ qua. Về sau, nếu từ đang soạn không còn nằm ngay
+        // trước con trỏ (người dùng chạm sang chỗ khác) thì bắt đầu từ mới. Kiểm tra bằng nội dung thật,
+        // không dựa vào vùng soạn thảo mà ô nhập báo về, vì nhiều ô (tìm kiếm, trình duyệt) báo sai.
+        if (SystemClock.uptimeMillis() - lastEdit < 400 || engine.isEmpty()) return;
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null && !compositionIntact(ic)) resetWord(ic);
+    }
+
+    /** Từ đang soạn còn nằm ngay trước con trỏ không? Trả về true nếu ô nhập không cho đọc để kiểm tra. */
+    private boolean compositionIntact(InputConnection ic) {
+        String shown = engine.text();
+        if (shown.isEmpty()) return true;
+        CharSequence before = ic.getTextBeforeCursor(shown.length(), 0);
+        if (before == null || before.length() == 0) return true;
+        return before.toString().equals(shown);
+    }
+
+    private void resetWord(InputConnection ic) {
+        engine.clear();
+        lang.clear();
+        compLen = 0;
+        if (!compat && ic != null) ic.finishComposingText();
     }
 
     // ------------------------------------------------------------------ dựng bàn phím
@@ -221,26 +269,50 @@ public class KeyboardService extends InputMethodService {
         gapWeight = Math.max(10, Math.min(50, prefs.getInt(Cfg.K_GAP, 25))) / 10f;
     }
 
+    private ArrayList<String[]> layoutRows() {
+        boolean numRow = prefs.getBoolean(Cfg.K_NUMROW, true);
+        ArrayList<String[]> rows = new ArrayList<>();
+        if (!symbols) {
+            if (numRow) rows.add(NUM_ROW);
+            rows.add(LETTER_ROWS[0]);
+            rows.add(LETTER_ROWS[1]);
+            rows.add(LETTER_ROWS[2]);
+        } else {
+            rows.add(NUM_ROW);
+            rows.add(SYM1);
+            if (numRow) {
+                rows.add(SYM2_NEW);
+                rows.add(SYM3_NEW);
+            } else {
+                rows.add(SYM2_OLD);
+            }
+        }
+        rows.add(BOTTOM);
+        return rows;
+    }
+
     private void buildKeys() {
         if (keysBox == null) return;
         keysBox.removeAllViews();
         letterViews.clear();
         shiftView = null;
-        String[][] layout = symbols ? SYMBOLS : LETTERS;
-        for (int r = 0; r < layout.length; r++) {
-            keysBox.addView(buildRow(layout[r], r));
-        }
+        for (String[] ids : layoutRows()) keysBox.addView(buildRow(ids));
         refreshLetters();
     }
 
-    private LinearLayout buildRow(String[] ids, int rowIdx) {
+    private LinearLayout buildRow(String[] ids) {
+        boolean bottom = false;
+        for (String id : ids) if (id.equals("SPACE")) bottom = true;
+        boolean numRow = ids == NUM_ROW;
+        int heightDp = numRow ? Math.round(rowHeightDp * 0.78f) : rowHeightDp;
+
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(rowHeightDp)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(heightDp)));
 
-        int splitAt = (splitNow && rowIdx < 3) ? (ids.length + 1) / 2 : -1;
-        boolean pad = !symbols && rowIdx == 1;
+        int splitAt = (splitNow && !bottom) ? (ids.length + 1) / 2 : -1;
+        boolean pad = !symbols && ids[0].equals("a");
         if (pad) row.addView(spacer(0.5f));
 
         for (int i = 0; i < ids.length; i++) {
@@ -252,7 +324,7 @@ public class KeyboardService extends InputMethodService {
                     row.addView(spacer(gapWeight));
                     row.addView(makeKey(id, "", 3f));
                 } else {
-                    row.addView(makeKey(id, viMode ? "Tiếng Việt" : "English", 6f));
+                    row.addView(makeKey(id, spaceLabel(), 6f));
                 }
                 continue;
             }
@@ -266,6 +338,10 @@ public class KeyboardService extends InputMethodService {
         return row;
     }
 
+    private String spaceLabel() {
+        return splitNow ? "" : (viMode ? "Tiếng Việt" : "English");
+    }
+
     private View spacer(float weight) {
         View v = new View(this);
         v.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight));
@@ -274,9 +350,7 @@ public class KeyboardService extends InputMethodService {
 
     private String labelFor(String id) {
         switch (id) {
-            case "SHIFT": return shift == 2 ? "⇪" : "⇧";
             case "DEL": return "⌫";
-            case "ENTER": return "↵";
             case "SYM": return symbols ? "ABC" : "?123";
             case "LANG": return viMode ? "VI" : "EN";
             default: return id;
@@ -380,17 +454,176 @@ public class KeyboardService extends InputMethodService {
         }
     }
 
+    private void haptic(View v) {
+        if (prefs.getBoolean(Cfg.K_HAPTIC, true)) v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+    }
+
+    // ------------------------------------------------------------------ bong bóng phóng to phím
+
+    private String previewText(String id) {
+        return (Character.isLetter(id.charAt(0)) && shift != 0) ? id.toUpperCase() : id;
+    }
+
+    private void showPreview(View key, String text) {
+        if (!prefs.getBoolean(Cfg.K_PREVIEW, true)) return;
+        try {
+            if (previewTv == null) {
+                previewTv = new TextView(this);
+                previewTv.setGravity(Gravity.CENTER);
+                previewTv.setSingleLine(true);
+                previewTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
+                preview = new PopupWindow(previewTv, dp(60), dp(70), false);
+                preview.setTouchable(false);
+                preview.setClippingEnabled(false);
+            }
+            GradientDrawable g = new GradientDrawable();
+            g.setColor(cKey | 0xFF000000);
+            g.setCornerRadius(dp(10));
+            g.setStroke(dp(1), cPress);
+            previewTv.setBackground(g);
+            previewTv.setTextColor(cText);
+            previewTv.setText(text);
+
+            int w = Math.max(key.getWidth() + dp(16), dp(52));
+            int h = key.getHeight() + dp(24);
+            int[] loc = new int[2];
+            key.getLocationOnScreen(loc);
+            int screenW = getResources().getDisplayMetrics().widthPixels;
+            int x = Math.max(dp(2), Math.min(screenW - w - dp(2), loc[0] + key.getWidth() / 2 - w / 2));
+            int y = Math.max(0, loc[1] - h + dp(10));
+            previewOwner = key;
+            if (preview.isShowing()) {
+                preview.update(x, y, w, h);
+            } else {
+                preview.setWidth(w);
+                preview.setHeight(h);
+                preview.showAtLocation(root, Gravity.NO_GRAVITY, x, y);
+            }
+        } catch (Exception ignored) {
+            // Không hiện được bong bóng thì vẫn gõ bình thường
+        }
+    }
+
+    /** owner == null: ẩn bất kể phím nào. */
+    private void hidePreview(View owner) {
+        try {
+            if (preview != null && preview.isShowing() && (owner == null || owner == previewOwner)) {
+                preview.dismiss();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    // ------------------------------------------------------------------ bảng chọn khi giữ phím
+
+    /** Các lựa chọn khi giữ phím chữ: chữ hoa (hoặc thường nếu đang bật Shift) và số/ký tự. */
+    private String[] altOptions(String id) {
+        if (symbols || id.length() != 1) return null;
+        String alt = ALT.get(id);
+        if (alt == null) return null;
+        return new String[]{shift != 0 ? id : id.toUpperCase(), alt};
+    }
+
+    private void showAlt(View key, String[] opts) {
+        try {
+            hideAlt();
+            altOpts = opts;
+            altSel = 0;
+            altItemW = dp(48);
+            int itemH = dp(56);
+            LinearLayout strip = new LinearLayout(this);
+            strip.setOrientation(LinearLayout.HORIZONTAL);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(cKey | 0xFF000000);
+            bg.setCornerRadius(dp(10));
+            bg.setStroke(dp(1), cPress);
+            strip.setBackground(bg);
+            altViews = new TextView[opts.length];
+            for (int i = 0; i < opts.length; i++) {
+                TextView t = new TextView(this);
+                t.setText(opts[i]);
+                t.setGravity(Gravity.CENTER);
+                t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
+                t.setTextColor(cText);
+                strip.addView(t, new LinearLayout.LayoutParams(altItemW, itemH));
+                altViews[i] = t;
+            }
+            paintAlt();
+
+            int w = altItemW * opts.length;
+            int[] loc = new int[2];
+            key.getLocationOnScreen(loc);
+            int screenW = getResources().getDisplayMetrics().widthPixels;
+            altLeft = Math.max(dp(4), Math.min(screenW - w - dp(4), loc[0] + key.getWidth() / 2 - w / 2));
+            int y = Math.max(0, loc[1] - itemH - dp(6));
+            altPopup = new PopupWindow(strip, w, itemH, false);
+            altPopup.setTouchable(false);
+            altPopup.setClippingEnabled(false);
+            altPopup.showAtLocation(root, Gravity.NO_GRAVITY, altLeft, y);
+        } catch (Exception e) {
+            altPopup = null;
+        }
+    }
+
+    private void paintAlt() {
+        for (int i = 0; i < altViews.length; i++) {
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(8));
+            g.setColor(i == altSel ? cPress | 0xFF000000 : 0x00000000);
+            altViews[i].setBackground(g);
+        }
+    }
+
+    private void highlightAlt(float rawX) {
+        if (altPopup == null || altOpts.length == 0) return;
+        int idx = (int) ((rawX - altLeft) / altItemW);
+        idx = Math.max(0, Math.min(altOpts.length - 1, idx));
+        if (idx != altSel) {
+            altSel = idx;
+            paintAlt();
+        }
+    }
+
+    private String currentAlt() {
+        return (altPopup != null && altSel < altOpts.length) ? altOpts[altSel] : null;
+    }
+
+    private void hideAlt() {
+        try {
+            if (altPopup != null && altPopup.isShowing()) altPopup.dismiss();
+        } catch (Exception ignored) {
+        }
+        altPopup = null;
+    }
+
     // ------------------------------------------------------------------ xử lý phím
 
     private final class KeyTouch implements View.OnTouchListener {
         private final String id;
-        private boolean longFired = false;
+        private View keyView;
+        private boolean longFired = false;  // đã hiện bảng chọn hoặc đã vào chế độ di chuyển con trỏ
+        private boolean cursorMode = false;
+        private boolean altShown = false;
+        private float downX, downY, lastX, lastY;
+
         private final Runnable longRun = new Runnable() {
             @Override public void run() {
-                int idx = "qwertyuiop".indexOf(id);
-                if (idx >= 0) {
+                if (id.equals("SPACE")) {
+                    cursorMode = true;
                     longFired = true;
-                    handleChar(String.valueOf(DIGITS.charAt(idx)));
+                    finishComposing();
+                    lang.clear();
+                    setSpaceHint(keyView, true);
+                    haptic(keyView);
+                } else {
+                    String[] opts = altOptions(id);
+                    if (opts != null) {
+                        longFired = true;
+                        altShown = true;
+                        hidePreview(null);
+                        showAlt(keyView, opts);
+                        haptic(keyView);
+                    }
                 }
             }
         };
@@ -403,44 +636,97 @@ public class KeyboardService extends InputMethodService {
 
         KeyTouch(String id) { this.id = id; }
 
-        private boolean hasLong() {
-            return !symbols && id.length() == 1 && "qwertyuiop".indexOf(id) >= 0;
-        }
-
         private void cancelAll() {
             handler.removeCallbacks(longRun);
             handler.removeCallbacks(repeatRun);
+        }
+
+        /** Vuốt ngang để di chuyển trái phải, vuốt dọc để lên xuống dòng. */
+        private void moveCursor(MotionEvent e) {
+            float stepX = dp(11), stepY = dp(30);
+            int nx = (int) ((e.getRawX() - lastX) / stepX);
+            if (nx != 0) {
+                nx = Math.max(-12, Math.min(12, nx));
+                int code = nx > 0 ? KeyEvent.KEYCODE_DPAD_RIGHT : KeyEvent.KEYCODE_DPAD_LEFT;
+                for (int i = 0; i < Math.abs(nx); i++) sendDownUpKeyEvents(code);
+                lastX += nx * stepX;
+                haptic(keyView);
+            }
+            int ny = (int) ((e.getRawY() - lastY) / stepY);
+            if (ny != 0) {
+                ny = Math.max(-6, Math.min(6, ny));
+                int code = ny > 0 ? KeyEvent.KEYCODE_DPAD_DOWN : KeyEvent.KEYCODE_DPAD_UP;
+                for (int i = 0; i < Math.abs(ny); i++) sendDownUpKeyEvents(code);
+                lastY += ny * stepY;
+                haptic(keyView);
+            }
         }
 
         @Override
         public boolean onTouch(View v, MotionEvent e) {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    keyView = v;
                     v.setPressed(true);
-                    if (prefs.getBoolean(Cfg.K_HAPTIC, true)) {
-                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
-                    }
+                    haptic(v);
                     longFired = false;
+                    cursorMode = false;
+                    altShown = false;
+                    downX = lastX = e.getRawX();
+                    downY = lastY = e.getRawY();
                     if (id.equals("DEL")) {
                         handleDelete();
                         handler.postDelayed(repeatRun, 400);
-                    } else if (hasLong()) {
-                        handler.postDelayed(longRun, 350);
+                    } else if (id.equals("SPACE")) {
+                        handler.postDelayed(longRun, 320);
+                    } else if (id.length() == 1) {
+                        showPreview(v, previewText(id));
+                        if (altOptions(id) != null) handler.postDelayed(longRun, 380);
+                    }
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (cursorMode) {
+                        moveCursor(e);
+                    } else if (altShown) {
+                        highlightAlt(e.getRawX());
+                    } else if (id.equals("SPACE") && !longFired
+                            && Math.abs(e.getRawX() - downX) + Math.abs(e.getRawY() - downY) > dp(14)) {
+                        handler.removeCallbacks(longRun); // vuốt khi chưa giữ đủ lâu: chỉ là gõ cách
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     v.setPressed(false);
                     cancelAll();
+                    hidePreview(v);
+                    if (altShown) {
+                        String s = currentAlt();
+                        hideAlt();
+                        if (s != null) typeExact(s);
+                        return true;
+                    }
+                    if (cursorMode) {
+                        setSpaceHint(v, false);
+                        return true;
+                    }
                     if (!id.equals("DEL") && !longFired) onKey(id);
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     v.setPressed(false);
                     cancelAll();
+                    hidePreview(v);
+                    hideAlt();
+                    if (cursorMode) setSpaceHint(v, false);
                     return true;
                 default:
                     return true;
             }
         }
+    }
+
+    private void setSpaceHint(View v, boolean active) {
+        if (!(v instanceof TextView)) return;
+        ((TextView) v).setText(active ? (splitNow ? "‹  ›" : "‹  kéo để di chuyển con trỏ  ›")
+                : spaceLabel());
     }
 
     private void onKey(String id) {
@@ -481,6 +767,7 @@ public class KeyboardService extends InputMethodService {
         }
     }
 
+    /** Phím thường: áp dụng Shift rồi gõ. */
     private void handleChar(String s) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -496,14 +783,57 @@ public class KeyboardService extends InputMethodService {
             shift = 0;
             refreshLetters();
         }
+        typeLetter(ic, c);
+    }
+
+    /** Ký tự chọn từ bảng giữ phím: dùng đúng như đã chọn, không đổi theo Shift. */
+    private void typeExact(String s) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+        char c = s.charAt(0);
+        if (c < 128 && Character.isLetter(c)) {
+            typeLetter(ic, c);
+        } else {
+            finishComposing();
+            commit(s);
+        }
+    }
+
+    private void typeLetter(InputConnection ic, char c) {
         if (viMode && !directMode) {
+            // Chạm sang chỗ khác từ lần gõ trước: bỏ từ cũ
+            if (!engine.isEmpty() && SystemClock.uptimeMillis() - lastEdit > 100 && !compositionIntact(ic)) {
+                resetWord(ic);
+            }
+            // Quay lại sửa từ cũ: dựng lại từ đang nằm trước con trỏ để gõ tiếp vẫn ghép được dấu
+            if (engine.isEmpty()) trySeed(ic);
             showComposition(ic, engine.type(c));
         } else {
             commit(String.valueOf(c));
         }
     }
 
-    /** Hiển thị từ đang soạn: gạch chân (composing) hoặc xóa-và-chèn lại ở chế độ tương thích. */
+    /** Nếu ngay trước con trỏ là một từ, nạp từ đó vào bộ gõ. */
+    private void trySeed(InputConnection ic) {
+        CharSequence sel = ic.getSelectedText(0);
+        if (sel != null && sel.length() > 0) return;         // đang bôi đen: gõ sẽ thay phần bôi đen
+        CharSequence before = ic.getTextBeforeCursor(14, 0);
+        if (before == null || before.length() == 0) return;
+        String b = before.toString();
+        int i = b.length();
+        while (i > 0 && Character.isLetter(b.charAt(i - 1))) i--;
+        String word = b.substring(i);
+        if (word.isEmpty() || word.length() > 12) return;
+        if (i == 0 && b.length() >= 14) return;              // chuỗi chữ quá dài: không phải một âm tiết
+        if (!engine.seed(word)) return;
+        if (compat) {
+            compLen = word.length();                         // showComposition sẽ xóa rồi chèn lại
+        } else {
+            ic.deleteSurroundingText(word.length(), 0);
+        }
+    }
+
+    /** Hiển thị từ đang soạn: xóa-và-chèn lại (gõ trực tiếp) hoặc gạch chân (composing). */
     private void showComposition(InputConnection ic, String text) {
         lastEdit = SystemClock.uptimeMillis();
         if (compat) {
@@ -559,7 +889,11 @@ public class KeyboardService extends InputMethodService {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
         lastEdit = SystemClock.uptimeMillis();
-        ic.commitText(s, 1);
+        if (nullInput) {
+            for (int i = 0; i < s.length(); i++) sendKeyChar(s.charAt(i));
+        } else {
+            ic.commitText(s, 1);
+        }
     }
 
     /** Chốt từ đang soạn. LangContext quyết định giữ tiếng Việt hay trả về phím tiếng Anh. */
